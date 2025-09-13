@@ -1,49 +1,51 @@
 use anyhow::Result;
-use base64::{Engine, engine::general_purpose};
-use serde_json::json;
-use std::{collections::HashMap, fs::File, io::Read};
+use reqwest::Response;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 
-use super::llm::LLM;
+use crate::ai::llm;
 
 pub struct Ollama {
     model: String,
-    api_path: String,
+    api_url: String,
 }
 
 impl Default for Ollama {
     fn default() -> Self {
         Self {
             model: "gemma3:12b".to_string(),
-            api_path: "http://localhost:11434/api/generate".to_string(),
+            api_url: "http://localhost:11434/api/generate".to_string(),
         }
     }
 }
 
-impl LLM for Ollama {
-    async fn generate(&self, prompt: &str, artifact: &[File]) -> Result<String, reqwest::Error> {
-        let mut images: Vec<String> = Vec::new();
-        for file in artifact {
-            let mut buf = Vec::new();
-            let mut f = file.try_clone().expect("Failed to clone file");
-            f.read_to_end(&mut buf).expect("Failed to read file");
+#[derive(Deserialize)]
+struct OllamaResponse {
+    response: String,
+}
 
-            let b64 = general_purpose::STANDARD.encode(buf);
-            images.push(b64);
-        }
+impl llm::LLM for Ollama {
+    async fn generate(&self, prompt: &str, images: &[&str]) -> Result<Response> {
+        let client = reqwest::Client::new();
 
-        let mut payload = HashMap::new();
-        payload.insert("model", json!(self.model));
+        let mut payload: HashMap<&str, Value> = HashMap::new();
+        payload.insert("model", json!(&self.model));
         payload.insert("prompt", json!(prompt));
+        payload.insert("stream", json!(false));
+        payload.insert("foramt", json!("json"));
 
         if !images.is_empty() {
             payload.insert("images", json!(images));
         }
 
-        // Send request
-        let client = reqwest::Client::new();
-        let res = client.post(&self.api_path).json(&payload).send().await?;
+        let response = client.post(&self.api_url).json(&payload).send().await?;
 
-        // Return response text
-        Ok(res.text().await?)
+        Ok(response)
+    }
+    async fn get_content(&self, response: Response) -> Result<String> {
+        let response_json: OllamaResponse = response.json().await?;
+
+        Ok(response_json.response)
     }
 }
